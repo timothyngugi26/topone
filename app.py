@@ -1,6 +1,10 @@
-import sys
+import os
+import streamlit as st
 
-# Knowledge base for your 7 products
+# ── Page config (must be first Streamlit call) ─────────────────────────
+st.set_page_config(page_title="Natural Health Products Assistant", page_icon="🌿")
+
+# ── Knowledge base for your 7 products ────────────────────────────────
 PRODUCTS = {
     "beef tallow": {
         "name": "Beef Tallow",
@@ -43,22 +47,20 @@ PRODUCTS = {
         "description": "A naturally sparkling fermented black or green tea infused with real ginger root.",
         "benefits": "Loaded with probiotics for gut health, while ginger adds anti-inflammatory and nausea-relief properties.",
         "usage": "Drink chilled (150-250 ml daily) as a refreshing, gut-friendly alternative to sugary sodas.",
-    }
+    },
 }
 
+# ── Keyword matching (unchanged logic) ─────────────────────────────────
 def find_product(user_query):
-    """Finds which product the user is talking about."""
     query = user_query.lower()
-    
-    # Handle beef tallow / fallow typo
+
     if "fallow" in query or "tallow" in query:
         return "beef tallow"
-    
+
     for key in PRODUCTS:
         if key in query:
             return key
-            
-    # Check for short keywords
+
     if "cocoa" in query or "cacao" in query:
         return "cocoa powder"
     if "chapati" in query:
@@ -71,61 +73,141 @@ def find_product(user_query):
         return "avocado powder"
     if "kombucha" in query or "ginger" in query:
         return "kombucha ginger"
-        
+
     return None
 
+
+# ── Rules-based answer (kept from your original) ───────────────────────
 def answer_question(user_query):
+    """Returns (markdown_text, product_key_or_None)."""
     query = user_query.lower().strip()
-    
-    # Check if user wants a list
+
     if query in ["list", "products", "show products", "menu"]:
-        print("\nAvailable Products:")
+        lines = ["**Available Products:**"]
         for idx, item in enumerate(PRODUCTS.values(), 1):
-            print(f" {idx}. {item['name']}")
-        return
+            lines.append(f"{idx}. {item['name']}")
+        return "\n".join(lines), None
 
     product_key = find_product(query)
-    
+
     if not product_key:
-        print("\nSorry, I couldn't identify the product. You can ask about:")
-        print("Beef Tallow, Cocoa Powder, Gluten-free Chapati Flour, Baobab Powder, Sea Moss, Avocado Powder, or Kombucha Ginger.")
-        return
+        return (
+            "Sorry, I couldn't identify the product. You can ask about:\n\n"
+            "Beef Tallow, Cocoa Powder, Gluten-free Chapati Flour, Baobab Powder, "
+            "Sea Moss, Avocado Powder, or Kombucha Ginger.",
+            None,
+        )
 
     data = PRODUCTS[product_key]
-    print(f"\n--- {data['name']} ---")
 
-    # Determine what they are asking about
     if any(w in query for w in ["benefit", "why", "good for", "health", "advantage"]):
-        print(f"Health Benefits: {data['benefits']}")
+        text = f"**{data['name']}**\n\n**Health Benefits:** {data['benefits']}"
     elif any(w in query for w in ["use", "how to", "take", "cook", "prepare", "drink"]):
-        print(f"How to Use: {data['usage']}")
+        text = f"**{data['name']}**\n\n**How to Use:** {data['usage']}"
     elif any(w in query for w in ["what is", "about", "tell me"]):
-        print(f"Description: {data['description']}")
-        print(f"Key Benefits: {data['benefits']}")
+        text = (
+            f"**{data['name']}**\n\n"
+            f"**Description:** {data['description']}\n\n"
+            f"**Key Benefits:** {data['benefits']}"
+        )
     else:
-        # General overview
-        print(f"What it is: {data['description']}")
-        print(f"Benefits:   {data['benefits']}")
-        print(f"How to use: {data['usage']}")
+        text = (
+            f"**{data['name']}**\n\n"
+            f"**What it is:** {data['description']}\n\n"
+            f"**Benefits:** {data['benefits']}\n\n"
+            f"**How to use:** {data['usage']}"
+        )
 
-def main():
-    print("=" * 60)
-    print(" WELCOME TO THE NATURAL HEALTH PRODUCTS ASSISTANT")
-    print("=" * 60)
-    print("Ask any question about our 7 products (or type 'list' to see them).")
-    print("Type 'exit' or 'quit' to leave.\n")
-    
-    while True:
-        try:
-            user_input = input("\nYour Question > ")
-            if user_input.strip().lower() in ["exit", "quit", "q"]:
-                print("Thank you for stopping by! Goodbye.")
-                break
-            if user_input.strip():
-                answer_question(user_input)
-        except (KeyboardInterrupt, EOFError):
-            print("\nGoodbye!")
-            break
+    return text, product_key
 
-if __name__ == "__main__":
-    main()
+
+# ── Optional AI layer (Gemini) ─────────────────────────────────────────
+@st.cache_resource
+def get_gemini_model():
+    """Returns a Gemini model object, or None if not configured."""
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return None
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        return genai.GenerativeModel("gemini-2.0-flash")
+    except Exception as e:
+        st.warning(f"AI layer unavailable: {e}")
+        return None
+
+
+def ask_ai(model, user_query, context):
+    """Ask Gemini with only the 7 products as context so it can't invent items."""
+    prompt = f"""You are a helpful assistant for a natural health products shop.
+Only discuss the following 7 products. Never invent products or prices.
+
+{context}
+
+Customer question: {user_query}
+
+Answer helpfully and briefly. If the question is unrelated to these products,
+politely say you only help with this shop's products."""
+    try:
+        return model.generate_content(prompt).text
+    except Exception as e:
+        return f"(AI error: {e})"
+
+
+def build_context():
+    parts = []
+    for p in PRODUCTS.values():
+        parts.append(
+            f"- {p['name']}: {p['description']} Benefits: {p['benefits']} Usage: {p['usage']}"
+        )
+    return "\n".join(parts)
+
+
+# ── Streamlit UI ───────────────────────────────────────────────────────
+st.title("🌿 Natural Health Products Assistant")
+st.caption(
+    "Ask about our 7 products — benefits, how to use them, or just type **list**."
+)
+
+# Sidebar: show the catalogue
+with st.sidebar:
+    st.header("Our Products")
+    for i, p in enumerate(PRODUCTS.values(), 1):
+        st.markdown(f"**{i}. {p['name']}**")
+        st.caption(p["description"])
+
+# Session state for chat history
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {
+            "role": "assistant",
+            "content": "Hi! Ask me about any of our 7 products, or type **list** to see them all.",
+        }
+    ]
+
+# Render history
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
+
+# Chat input
+if prompt := st.chat_input("Ask about a product…"):
+    # Show user message
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # 1) Try rules-based answer first (fast, accurate, no API cost)
+    reply, matched_key = answer_question(prompt)
+
+    # 2) If no product matched AND Gemini is available, fall back to AI
+    if matched_key is None and "couldn't identify" in reply:
+        model = get_gemini_model()
+        if model is not None:
+            with st.spinner("Thinking…"):
+                reply = ask_ai(model, prompt, build_context())
+
+    # Show assistant reply
+    with st.chat_message("assistant"):
+        st.markdown(reply)
+    st.session_state.messages.append({"role": "assistant", "content": reply})
